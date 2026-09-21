@@ -175,6 +175,32 @@
     return dec;
   }
 
+  // Samsung/Google "Motion Photo" JPEGs embed a short video clip after the JPEG data.
+  // The still image's own Exif GPS block is sometimes left blank/corrupted, while the
+  // real GPS fix is written into the embedded video's QuickTime "©xyz" location atom
+  // as an ISO 6709 string, e.g. "+28.4811+034.4955/". Gallery apps that show a location
+  // for such files are reading it from there, not from the JPEG's Exif.
+  async function extractMotionPhotoGps(file){
+    try {
+      const buf = await file.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let text = '';
+      const CHUNK = 0x8000;
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        text += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+      }
+      const match = text.match(/([+-]\d{1,2}\.\d+)([+-]\d{1,3}\.\d+)([+-]\d+\.?\d*)?\//);
+      if (!match) return null;
+      const latitude = parseFloat(match[1]);
+      const longitude = parseFloat(match[2]);
+      const altitude = match[3] != null ? parseFloat(match[3]) : null;
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+      return { latitude, longitude, altitude: Number.isFinite(altitude) ? altitude : null };
+    } catch(e) {
+      return null;
+    }
+  }
+
   async function extractMetadata(file){
     const base = {
       fileName: file.name,
@@ -182,7 +208,7 @@
       fileType: file.type,
       lastModified: file.lastModified ? new Date(file.lastModified).toISOString() : null,
       width: null, height: null,
-      latitude: null, longitude: null, altitude: null, gpsCorrupted: false,
+      latitude: null, longitude: null, altitude: null, gpsCorrupted: false, gpsSource: null,
       dateTaken: null, make: null, model: null, lensModel: null,
       exposureTime: null, fNumber: null, iso: null, focalLength: null, orientation: null
     };
@@ -208,6 +234,7 @@
         // present but all-zero/invalid lat-lon rationals - a corrupted placeholder, not "no GPS"
         const hasGpsBlock = exif.GPSLatitude !== undefined || exif.GPSLongitude !== undefined || exif.GPSAltitudeRef !== undefined;
         base.gpsCorrupted = hasGpsBlock && !(Number.isFinite(base.latitude) && Number.isFinite(base.longitude));
+        if (Number.isFinite(base.latitude) && Number.isFinite(base.longitude)) base.gpsSource = 'exif';
         if (exif.DateTimeOriginal) base.dateTaken = new Date(exif.DateTimeOriginal).toISOString();
         else if (exif.CreateDate) base.dateTaken = new Date(exif.CreateDate).toISOString();
         if (exif.Make) base.make = String(exif.Make).trim();
@@ -221,6 +248,17 @@
       }
     } catch(e) {
       // no exif / unsupported format - keep defaults
+    }
+
+    if (!(Number.isFinite(base.latitude) && Number.isFinite(base.longitude))) {
+      const motionGps = await extractMotionPhotoGps(file);
+      if (motionGps) {
+        base.latitude = motionGps.latitude;
+        base.longitude = motionGps.longitude;
+        if (motionGps.altitude != null) base.altitude = motionGps.altitude;
+        base.gpsSource = 'motion-photo';
+        base.gpsCorrupted = false;
+      }
     }
     return base;
   }
@@ -240,9 +278,11 @@
     const mapLink = hasGps
       ? `<a class="maplink" target="_blank" rel="noopener" href="https://www.google.com/maps?q=${m.latitude},${m.longitude}">📍 פתח במפות גוגל (${m.latitude.toFixed(5)}, ${m.longitude.toFixed(5)})</a>`
       : '';
-    const gpsNote = (!hasGps && m.gpsCorrupted)
-      ? `<div class="gps-note">⚠️ הקובץ מכיל בלוק GPS פגום/ריק (המצלמה כתבה נתונים לא תקינים). מיקום שמוצג באפליקציות כמו Google Photos כנראה מגיע מהיסטוריית המיקום של המכשיר, לא מהקובץ עצמו.</div>`
-      : '';
+    const gpsNote = hasGps && m.gpsSource === 'motion-photo'
+      ? `<div class="gps-note">📹 המיקום שוחזר מתוך הווידאו המוטמע (Motion Photo) - נתוני ה-GPS של תמונת ה-JPEG עצמה היו פגומים.</div>`
+      : (!hasGps && m.gpsCorrupted)
+        ? `<div class="gps-note">⚠️ הקובץ מכיל בלוק GPS פגום/ריק בתמונה עצמה, ולא נמצא מיקום גם בווידאו מוטמע. מיקום שמוצג באפליקציות אחרות כנראה מגיע מהיסטוריית המיקום של המכשיר, לא מהקובץ עצמו.</div>`
+        : '';
 
     card.innerHTML = `
       <div class="thumb-wrap">
