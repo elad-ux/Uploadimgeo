@@ -149,8 +149,28 @@
   function refreshCounters(){
     countEl.textContent = items.length;
     galleryEmpty.style.display = items.length ? 'none' : 'block';
-    const hasGps = items.some(it => it.meta && it.meta.latitude != null);
+    const hasGps = items.some(it => it.meta && Number.isFinite(it.meta.latitude) && Number.isFinite(it.meta.longitude));
     mapEmpty.style.display = hasGps ? 'none' : 'block';
+  }
+
+  function toFiniteNumber(v){
+    return typeof v === 'number' && Number.isFinite(v) ? v : null;
+  }
+
+  function gpsToDecimal(value, ref){
+    if (value == null) return null;
+    let dec;
+    if (Array.isArray(value)) {
+      const [d = 0, m = 0, s = 0] = value;
+      dec = d + m / 60 + s / 3600;
+    } else if (typeof value === 'number') {
+      dec = value;
+    } else {
+      return null;
+    }
+    if (!Number.isFinite(dec)) return null;
+    if (ref === 'S' || ref === 'W') dec = -Math.abs(dec);
+    return dec;
   }
 
   async function extractMetadata(file){
@@ -179,9 +199,9 @@
     try {
       const exif = await exifr.parse(file, { gps: true, tiff: true, exif: true, ifd0: true, translateValues: true });
       if (exif) {
-        if (typeof exif.latitude === 'number') base.latitude = exif.latitude;
-        if (typeof exif.longitude === 'number') base.longitude = exif.longitude;
-        if (exif.GPSAltitude != null) base.altitude = exif.GPSAltitude;
+        base.latitude = toFiniteNumber(exif.latitude) ?? gpsToDecimal(exif.GPSLatitude, exif.GPSLatitudeRef);
+        base.longitude = toFiniteNumber(exif.longitude) ?? gpsToDecimal(exif.GPSLongitude, exif.GPSLongitudeRef);
+        base.altitude = toFiniteNumber(exif.GPSAltitude);
         if (exif.DateTimeOriginal) base.dateTaken = new Date(exif.DateTimeOriginal).toISOString();
         else if (exif.CreateDate) base.dateTaken = new Date(exif.CreateDate).toISOString();
         if (exif.Make) base.make = String(exif.Make).trim();
@@ -206,7 +226,7 @@
 
   function renderCard(item){
     const m = item.meta;
-    const hasGps = m && m.latitude != null && m.longitude != null;
+    const hasGps = m && Number.isFinite(m.latitude) && Number.isFinite(m.longitude);
     const card = document.createElement('div');
     card.className = 'card';
     card.id = 'card-' + item.id;
@@ -231,7 +251,7 @@
         ${metaRow('חשיפה', m.exposureTime ? `1/${Math.round(1/m.exposureTime)}s` : '')}
         ${metaRow('צמצם', m.fNumber ? `f/${m.fNumber}` : '')}
         ${metaRow('ISO', m.iso)}
-        ${metaRow('גובה', m.altitude != null ? `${m.altitude.toFixed(1)} מ׳` : '')}
+        ${metaRow('גובה', Number.isFinite(m.altitude) ? `${m.altitude.toFixed(1)} מ׳` : '')}
         ${mapLink}
       </div>
     `;
@@ -271,7 +291,7 @@
       item.meta = await extractMetadata(file);
       renderCard(item);
 
-      if (item.meta.latitude != null && item.meta.longitude != null) {
+      if (Number.isFinite(item.meta.latitude) && Number.isFinite(item.meta.longitude)) {
         item.marker = L.marker([item.meta.latitude, item.meta.longitude])
           .addTo(map)
           .bindPopup(`<b>${item.meta.fileName}</b>`);
