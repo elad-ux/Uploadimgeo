@@ -46,6 +46,8 @@
   .badge{position:absolute;top:8px;insetInlineStart:8px;left:8px;background:rgba(0,0,0,.6);padding:3px 8px;border-radius:20px;font-size:.72rem}
   .badge.gps{background:rgba(34,197,94,.85);color:#04210f}
   .badge.nogps{background:rgba(148,163,184,.5)}
+  .badge.corrupted{background:rgba(245,158,11,.85);color:#2a1600}
+  .gps-note{color:var(--muted);font-size:.78rem;line-height:1.4}
   .remove-btn{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);color:#fff;border:none;border-radius:50%;width:26px;height:26px;line-height:1;font-size:1rem;padding:0}
   .card-body{padding:10px 12px;display:flex;flex-direction:column;gap:6px;font-size:.82rem}
   .card-body .name{font-weight:600;font-size:.88rem;word-break:break-all}
@@ -180,7 +182,7 @@
       fileType: file.type,
       lastModified: file.lastModified ? new Date(file.lastModified).toISOString() : null,
       width: null, height: null,
-      latitude: null, longitude: null, altitude: null,
+      latitude: null, longitude: null, altitude: null, gpsCorrupted: false,
       dateTaken: null, make: null, model: null, lensModel: null,
       exposureTime: null, fNumber: null, iso: null, focalLength: null, orientation: null
     };
@@ -202,6 +204,10 @@
         base.latitude = toFiniteNumber(exif.latitude) ?? gpsToDecimal(exif.GPSLatitude, exif.GPSLatitudeRef);
         base.longitude = toFiniteNumber(exif.longitude) ?? gpsToDecimal(exif.GPSLongitude, exif.GPSLongitudeRef);
         base.altitude = toFiniteNumber(exif.GPSAltitude);
+        // some cameras (seen on Samsung devices) write a GPS block with the ref/altitude
+        // present but all-zero/invalid lat-lon rationals - a corrupted placeholder, not "no GPS"
+        const hasGpsBlock = exif.GPSLatitude !== undefined || exif.GPSLongitude !== undefined || exif.GPSAltitudeRef !== undefined;
+        base.gpsCorrupted = hasGpsBlock && !(Number.isFinite(base.latitude) && Number.isFinite(base.longitude));
         if (exif.DateTimeOriginal) base.dateTaken = new Date(exif.DateTimeOriginal).toISOString();
         else if (exif.CreateDate) base.dateTaken = new Date(exif.CreateDate).toISOString();
         if (exif.Make) base.make = String(exif.Make).trim();
@@ -234,11 +240,14 @@
     const mapLink = hasGps
       ? `<a class="maplink" target="_blank" rel="noopener" href="https://www.google.com/maps?q=${m.latitude},${m.longitude}">📍 פתח במפות גוגל (${m.latitude.toFixed(5)}, ${m.longitude.toFixed(5)})</a>`
       : '';
+    const gpsNote = (!hasGps && m.gpsCorrupted)
+      ? `<div class="gps-note">⚠️ הקובץ מכיל בלוק GPS פגום/ריק (המצלמה כתבה נתונים לא תקינים). מיקום שמוצג באפליקציות כמו Google Photos כנראה מגיע מהיסטוריית המיקום של המכשיר, לא מהקובץ עצמו.</div>`
+      : '';
 
     card.innerHTML = `
       <div class="thumb-wrap">
         <img src="${item.url}" alt="${m.fileName}">
-        <span class="badge ${hasGps ? 'gps' : 'nogps'}">${hasGps ? 'יש מיקום' : 'ללא מיקום'}</span>
+        <span class="badge ${hasGps ? 'gps' : (m.gpsCorrupted ? 'corrupted' : 'nogps')}">${hasGps ? 'יש מיקום' : (m.gpsCorrupted ? 'מיקום פגום בקובץ' : 'ללא מיקום')}</span>
         <button class="remove-btn" title="הסר">✕</button>
       </div>
       <div class="card-body">
@@ -253,6 +262,7 @@
         ${metaRow('ISO', m.iso)}
         ${metaRow('גובה', Number.isFinite(m.altitude) ? `${m.altitude.toFixed(1)} מ׳` : '')}
         ${mapLink}
+        ${gpsNote}
       </div>
     `;
 
@@ -335,7 +345,7 @@
   document.getElementById('btn-csv').addEventListener('click', () => {
     if (!items.length) return setStatus('אין תמונות לייצוא', 'err');
     const rows = buildManifest();
-    const cols = ['fileName','fileSize','width','height','latitude','longitude','altitude','dateTaken','make','model','lensModel','exposureTime','fNumber','iso','focalLength','orientation'];
+    const cols = ['fileName','fileSize','width','height','latitude','longitude','altitude','gpsCorrupted','dateTaken','make','model','lensModel','exposureTime','fNumber','iso','focalLength','orientation'];
     const csv = [cols.join(',')].concat(
       rows.map(r => cols.map(c => {
         const v = r[c];
